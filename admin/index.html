@@ -1,0 +1,158 @@
+<!doctype html>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Central Push Admin</title>
+<style>
+  :root{--bg:#f6f7fb;--card:#fff;--mut:#666;--p:#2563eb;--ok:#16a34a;--bad:#b91c1c}
+  *{box-sizing:border-box} body{font-family:system-ui,Segoe UI,Arial;background:var(--bg);margin:0}
+  header{background:#fff;border-bottom:1px solid #ececec;padding:12px 16px;display:flex;gap:12px;align-items:center}
+  h1{font-size:18px;margin:0 8px 0 0}
+  .wrap{max-width:1100px;margin:24px auto;padding:0 16px}
+  .grid{display:grid;grid-template-columns:2fr 1fr;gap:16px}
+  .card{background:var(--card);border:1px solid #e9e9e9;border-radius:12px;padding:16px}
+  label{display:block;margin:8px 0;font-weight:600}
+  input,button,textarea,select{font:inherit;padding:10px;border:1px solid #ccc;border-radius:8px;width:100%}
+  button{cursor:pointer;background:var(--p);color:#fff;border:0}
+  button.secondary{background:#f1f1f1;color:#111;border:1px solid #e5e5e5}
+  table{width:100%;border-collapse:collapse} th,td{padding:8px;border-bottom:1px solid #eee;text-align:left;font-size:14px}
+  .muted{color:var(--mut);font-size:12px}
+</style>
+
+<header>
+  <h1>Central Push Admin</h1>
+  <input id="apiBase" placeholder="Admin API base (https://admin.yourdomain.com)" style="width:360px">
+  <input id="adminToken" placeholder="Admin token" style="width:280px">
+  <button class="secondary" id="loadBtn">Load</button>
+</header>
+
+<div class="wrap">
+  <div class="grid">
+    <div class="card">
+      <h3>Clients</h3>
+      <table id="clientsTable">
+        <thead><tr><th>ID</th><th>Name</th><th>API Base</th><th>Balance</th><th>Actions</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <h3>Add / Update Client</h3>
+      <label>Client ID <input id="c_id" placeholder="e.g. mati99"/></label>
+      <label>Name <input id="c_name" placeholder="Mati99"/></label>
+      <label>Client API Base <input id="c_api" placeholder="https://push.clientdomain.com"/></label>
+      <label>Client Token <input id="c_tok" placeholder="DASHBOARD_TOKEN"/></label>
+      <button id="saveClient">Save Client</button>
+      <div class="muted" style="margin-top:8px">
+        Client API must expose <code>/balance</code> and <code>/topup</code> with header <code>x-dashboard-token</code>.
+      </div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:16px">
+    <h3>Top-up / Deduct Points</h3>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+      <label>Client
+        <select id="t_client"></select>
+      </label>
+      <label>Points (+ add / − deduct)
+        <input id="t_points" type="number" placeholder="100000">
+      </label>
+    </div>
+    <label>Note (optional) <input id="t_note" placeholder="Payment ref, admin name"></label>
+    <button id="doTopup">Apply</button>
+    <div id="t_status" class="muted" style="margin-top:8px"></div>
+  </div>
+
+  <div class="card" style="margin-top:16px">
+    <h3>Tips</h3>
+    <ul class="muted">
+      <li>Enter your Admin API base and token once, then click <b>Load</b>.</li>
+      <li>Add clients with their API base + client token (from their Worker).</li>
+      <li>Top-up with positive points, deduct with negative points.</li>
+    </ul>
+  </div>
+</div>
+
+<script>
+  const $ = s => document.querySelector(s);
+  const fmt = n => Number(n).toLocaleString('en-IN');
+
+  async function adminApi(path, opts={}) {
+    const base = $('#apiBase').value.trim().replace(/\/+$/,'');
+    const token = $('#adminToken').value.trim();
+    if(!base || !token) throw new Error('Enter API base and admin token');
+    const r = await fetch(base + path, { ...opts, headers: { 'x-admin-token': token, ...(opts.headers||{}) }});
+    const j = await r.json().catch(()=> ({}));
+    if (!r.ok || j.ok === false) throw new Error(j.error || r.statusText);
+    return j;
+  }
+
+  async function load() {
+    const list = await adminApi('/api/clients');
+    const tb = $('#clientsTable tbody'); tb.innerHTML = '';
+    const sel = $('#t_client'); sel.innerHTML = '';
+
+    for (const c of (list.clients||[])) {
+      let bal = '—';
+      try {
+        const b = await adminApi('/api/balance?id='+encodeURIComponent(c.id));
+        bal = (b?.data?.points != null) ? fmt(b.data.points) : 'n/a';
+      } catch(e) { bal = 'error'; }
+
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td>${c.id}</td>
+        <td>${c.name||''}</td>
+        <td><span class="muted">${c.api_base}</span></td>
+        <td><b>${bal}</b></td>
+        <td><button class="secondary" data-del="${c.id}">Delete</button></td>`;
+      tb.appendChild(tr);
+
+      const opt = document.createElement('option');
+      opt.value = c.id; opt.textContent = c.name || c.id;
+      sel.appendChild(opt);
+    }
+
+    tb.querySelectorAll('button[data-del]').forEach(btn=>{
+      btn.onclick = async ()=>{
+        if (!confirm('Delete client '+btn.dataset.del+'?')) return;
+        await adminApi('/api/clients?id='+encodeURIComponent(btn.dataset.del), { method:'DELETE' });
+        load();
+      };
+    });
+  }
+
+  $('#loadBtn').onclick = load;
+
+  $('#saveClient').onclick = async ()=>{
+    const id = $('#c_id').value.trim();
+    const name = $('#c_name').value.trim();
+    const api_base = $('#c_api').value.trim();
+    const token = $('#c_tok').value.trim();
+    if (!id || !api_base || !token) return alert('id, api_base, token required');
+    await adminApi('/api/clients', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({id, name, api_base, token})
+    });
+    $('#c_id').value = $('#c_name').value = $('#c_api').value = $('#c_tok').value = '';
+    load();
+  };
+
+  $('#doTopup').onclick = async ()=>{
+    const id = $('#t_client').value;
+    const pts = parseInt($('#t_points').value||'0',10);
+    const note = $('#t_note').value;
+    const s = $('#t_status'); s.textContent = 'Processing…';
+    try {
+      await adminApi('/api/topup', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({id, points: pts, note})
+      });
+      s.textContent = '✅ Done';
+      $('#t_points').value = ''; $('#t_note').value = '';
+      load();
+    } catch(e) { s.textContent = '❌ ' + e.message; }
+  };
+</script>
